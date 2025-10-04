@@ -1,0 +1,109 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Helper function to check if user is admin
+    function isAdmin() {
+      return request.auth != null && 
+             exists(/databases/$(database)/documents/admins/$(request.auth.uid)) &&
+             get(/databases/$(database)/documents/admins/$(request.auth.uid)).data.role == 'admin';
+    }
+    
+    // Helper function to check if user is coordinator
+    function isCoordinator() {
+      return request.auth != null &&
+             exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+             get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'coordinator';
+    }
+
+    // Helper function to check if user is supervisor
+    function isSupervisor() {
+      return request.auth != null &&
+             exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+             get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'supervisor';
+    }
+    
+    // Helper function to check if user is authenticated
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    // Helper function to check if user owns the document
+    function isOwner(userId) {
+      return request.auth != null && request.auth.uid == userId;
+    }
+    
+    // Admins collection - admins can read their own data or other admins
+    match /admins/{adminId} {
+      allow read: if request.auth != null &&
+                     (request.auth.uid == adminId || isAdmin());
+      allow write: if false; // Admins can only be added manually
+    }
+    
+    // Users collection
+    match /users/{userId} {
+      // Allow public read for login purposes (to find email by reg number or ID)
+      // Authenticated users can also read based on their role
+      allow read: if true;
+
+      // Users can create their own document during signup
+      // Allow creation if authenticated user matches the document ID being created
+      allow create: if request.auth != null && request.auth.uid == userId;
+
+      // Users can update their own data, admins and supervisors can update (supervisors can score students)
+      allow update: if isOwner(userId) || isAdmin() || isSupervisor();
+
+      // Only admins can delete users
+      allow delete: if isAdmin();
+    }
+    
+    // Valid supervisor/coordinator codes - only admins can manage
+    match /validSupervisorCodes/{codeId} {
+      // Anyone can read to validate codes during signup
+      allow read: if true;
+
+      // Only admins can create and delete codes
+      allow create, delete: if isAdmin();
+
+      // Authenticated users can update to mark code as used during signup
+      // But only if they're marking it as used (not changing other fields)
+      allow update: if isAdmin() ||
+                      (isAuthenticated() &&
+                       request.resource.data.diff(resource.data).affectedKeys().hasOnly(['used', 'usedBy', 'usedAt']) &&
+                       request.resource.data.used == true);
+    }
+    
+    // Valid registration numbers - only admins can manage
+    match /validRegistrationNumbers/{regId} {
+      // Anyone can read to validate during signup
+      allow read: if true;
+
+      // Only admins can create/update/delete registration numbers
+      allow create, update, delete: if isAdmin();
+    }
+
+    // Notifications - users can read their own notifications, supervisors and coordinators can create
+    match /notifications/{notificationId} {
+      allow read: if isAuthenticated() && resource.data.recipientId == request.auth.uid;
+      allow create: if isAuthenticated();
+      allow update: if isAuthenticated() && resource.data.recipientId == request.auth.uid;
+      allow delete: if isAuthenticated() && resource.data.recipientId == request.auth.uid;
+    }
+
+    // School change approvals - students can create, supervisors can update
+    match /schoolChangeApprovals/{approvalId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated();
+      allow update: if isSupervisor() || isAdmin();
+      allow delete: if isAdmin();
+    }
+
+    // Reviews - students can create their own, coordinators can read all
+    match /reviews/{reviewId} {
+      allow read: if isCoordinator() || isAdmin();
+      allow create: if isAuthenticated();
+      allow update: if isOwner(resource.data.studentId) || isAdmin();
+      allow delete: if isAdmin();
+    }
+  }
+}
